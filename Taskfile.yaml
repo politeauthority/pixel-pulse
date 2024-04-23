@@ -1,0 +1,13 @@
+version: "3"
+
+tasks:
+  mirror:
+    cmds:
+      - |
+        mc mirror --watch a1/corrine-joe/raw_photos/rust data/rust
+
+  generate-video:
+    cmds:
+      - |
+        python3.10 src/camera/generate-video.py rust -o
+        # mc cp data/videos/rust_time_lapse.mp4 a1/corrine-joe/videos/

@@ -21,9 +21,11 @@ from paho.mqtt import client as mqtt_client
 from polite_lib.file_tools.minio import Minio
 from polite_lib.notify import quigley_notify
 from polite_lib.utils import date_utils
+from polite_lib.file_tools import file_tools
 
 
-INTERVAL = 15.0
+INTERVAL_PHOTO = 10.0
+INTERVAL_CHECK_IN = 500
 WORK_DIR = '/home/comitup/raw_photos'
 ROOM_ID = "!cdCwnaincUSIwCVjKh:squid-ink.us"
 BUCKET_NAME = "corrine-joe"
@@ -35,7 +37,7 @@ class TimeLapse:
         self.args = args
         self.started = arrow.utcnow()
         self.check_in_last = arrow.utcnow()
-        self.check_in_interval = 500
+        self.check_in_interval = INTERVAL_CHECK_IN
         self.notify_last = arrow.utcnow()
         self.last_uploaded = None
         self.battery_level = None
@@ -44,10 +46,13 @@ class TimeLapse:
 
     def main(self) -> bool:
         """Main entrypoint."""
+
         if self.args.test:
             self.take_test_shot()
             return True
         self.setup()
+        if self.args.cleanup:
+            self.cleanup()
         self.run_timelapse()
         return True
 
@@ -134,7 +139,7 @@ class TimeLapse:
                         if sleep < 0.0:
                             break
                         time.sleep(sleep)
-                    self.checkin(camera)
+                    self.matrix_checkin(camera)
                     path = camera.capture(gp.GP_CAPTURE_IMAGE)
                     camera_file = camera.file_get(
                         path.folder, path.name, gp.GP_FILE_TYPE_NORMAL)
@@ -143,58 +148,105 @@ class TimeLapse:
                     print("Saved:\t%s" % local_path)
                     camera.file_delete(path.folder, path.name)
                     self.upload_photo(local_path)
-                    next_shot += INTERVAL
+                    next_shot += INTERVAL_PHOTO
                     self.count += 1
+
                 except KeyboardInterrupt:
                     print("Pausing")
-                    cont = input("Continue?")
+                    cont = input("Resume?\t")
                     if cont in ["y", "yes"]:
+                        print("Continuing time lapse")
                         continue
                     else:
+                        print("Exiting time lapse")
                         break
         return True
 
-    def checkin(self, camera: gp.camera.Camera) -> bool:
+    def matrix_checkin(self, camera: gp.camera.Camera) -> bool:
         """Process for managing check-ins. We'll capture battery level and send a message to Matrix
         stating the current state of the camera timelapse application.
         """
-        now = arrow.utcnow()
+        now = arrow.now()
         diff = (now - self.check_in_last).seconds
-        next_check_in = self.check_in_interval - diff 
+        next_check_in = self.check_in_interval - diff
         print("\tNext Check In %s seconds" % next_check_in)
-        # if diff > (self.check_in_interval / 2):
-        #     return True
         text = camera.get_summary()
         battery_level = self._get_battery_level(str(text))
         override_time = False
         msg = ""
+        # Handle Battery Checks
         if self.battery_level != battery_level:
             override_time = True
-            self.battery_levels[battery_level] = arrow.utcnow()
+            self.battery_levels[battery_level] = arrow.now()
             if not self.battery_level:
                 msg += f"<br>Battery at: {self.battery_level}%"
             else:
                 msg += f"<br>Battery has <b>dropped</b> to: {self.battery_level}%"
             self.battery_level = battery_level
-            self.battery_level_change = arrow.utcnow()
+            self.battery_level_change = arrow.now()
+
+        # Handle Disk Checks
+        disk_warning = False
+        disk_info = file_tools.get_disk_info()
+        if disk_info["percent_available"] < 30:
+            override_time = True
+            disk_warning = True
+            print("disk info issue!")
 
         if not override_time and diff < self.check_in_interval:
             return True
 
         print("Battery Level: %s" % battery_level)
-        msg += f"<b>Camera-Pi</b><br>On photo: {self.count}<br>Last Uploaded: {self.last_uploaded}"
-        msg += f"<br>Battery level: {self.battery_level}%"
-        msg += str(self.battery_levels)
+        msg += f"<b>Camera-Pi</b><br>On Photo Frame: <b>{self.count}</b>"
+        msg += f"<br>Capture Group: <b>{self.args.name}</b>"
+        msg += f"<br>Last Uploaded: {self.last_uploaded}"
+        msg += f"<br>Battery Level: <b>{self.battery_level}%</b>"
+        msg += f"<br>Local Diskspace Available: "
+
+        if disk_warning:
+            msg += f"""<span style="color:red"><b>{disk_info["percent_available"]}%</b>"""
+            msg += f"""</span>"""
+            # msg += f"""{disk_info["file_system_available_human"]}</span>"""
+        else:
+            msg += f"""<span style="color:green"><b>{disk_info["percent_available"]}%</b>"""
+            msg += f"""</span>"""
+            # msg += f"""{disk_info["file_system_available_human"]}</span>"""
+
+        battery_levels_str = {}
+        for batt_level, batt_time in self.battery_levels.items():
+            battery_levels_str[str(batt_level)] = date_utils.json_date_out(batt_time.datetime)
+
+        msg += f"<br>Batt Times<code>{str(battery_levels_str)}</code>"
         seconds = (now - self.started).seconds
         elapsed = date_utils.elsapsed_time_human(seconds)
-        msg += f"Running: {elapsed}"
+        msg += f"<br>Session Run Time: <b>{elapsed}</b>"
 
         diff_notify = (now - self.notify_last).seconds 
         if diff_notify < 60:
             return True
         quigley_notify.send_notification(msg, room_id=ROOM_ID)
-        self.check_in_last = arrow.utcnow()
+        self.check_in_last = arrow.now()
+        self.cleanup()
+        return True
 
+    def cleanup(self) -> bool:
+        """Remove photos that have already been uploaded"""
+        if not self.args.cleanup:
+            return True
+        print("Running cleanup")
+        photo_files = os.listdir(self.photo_path)
+        photo_number = self._get_next_photo_number()
+        if photo_number == 0:
+            return True
+        last_photo_number = photo_number - 1
+        deleted_photos = 0
+        for photo_file in photo_files:
+            if photo_file != "frame{:04d}.jpg".format(last_photo_number):
+                full_path = os.path.join(self.photo_path, photo_file)
+                # print("Removing: %s" % full_path)
+                os.remove(full_path)
+                deleted_photos += 1
+        print("Deleted: %s" % deleted_photos)
         return True
 
     def _get_battery_level(self, camera_info: str) -> int:
@@ -231,21 +283,28 @@ class TimeLapse:
         self.photo_path = os.path.join(WORK_DIR, self.args.name)
         if not os.path.exists(self.photo_path):
             os.makedirs(self.photo_path)
+        self.start_at = self._get_next_photo_number()
+        print("Starting at frame: %s" % self.start_at)
+        return True
+
+    def _get_next_photo_number(self) -> int:
+        """Check the photo path and get the last photo taken."""
         existing_files = os.listdir(self.photo_path)
-        if not existing_files:
-            self.start_at = 0
-            return True
         biggest_number = 0
         for phile in existing_files:
+            if "frame" not in phile:
+                continue
             try:
                 number = int(phile[5:9])
             except ValueError:
                 continue
             if number > biggest_number:
                 biggest_number = number
-        self.start_at = biggest_number + 1
-        print("Starting at frame: %s" % self.start_at)
-        return True
+        if biggest_number == 0:
+            return 0
+        else:
+            return biggest_number + 1
+        
 
 
 def parse_args():
@@ -261,6 +320,10 @@ def parse_args():
         "--test",
         action="store_true",
         help="Take a test shot")
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Remove raw photos off the disk")
     the_args = parser.parse_args()
     return the_args
 
@@ -270,3 +333,5 @@ if __name__ == "__main__":
     # TimeLapse(the_args).upload_photo()
     TimeLapse(the_args).main()
 
+
+# End File: politeauthority/pixel-pulse/src/camera/timelapse.py
