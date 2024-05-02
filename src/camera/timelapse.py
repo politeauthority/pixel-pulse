@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 """
-    Time Lapse Record v0.0.1
-
-This works OK with my Canon SLR, but will probably need changes to work
-with another camera.
+    Timelapse v.0.0.1
 
 """
 
@@ -41,12 +38,14 @@ class TimeLapse:
         self.notify_last = arrow.utcnow()
         self.last_uploaded = None
         self.battery_level = None
+        self.upload = True
         self.battery_level_change = None
         self.battery_levels = {}
+        self.photos_taken = 0
+        self.photos_uploaded = 0
 
     def main(self) -> bool:
         """Main entrypoint."""
-
         if self.args.test:
             self.take_test_shot()
             return True
@@ -148,17 +147,19 @@ class TimeLapse:
                     print("Saved:\t%s" % local_path)
                     camera.file_delete(path.folder, path.name)
                     self.upload_photo(local_path)
+                    self.photos_taken += 1
                     next_shot += INTERVAL_PHOTO
                     self.count += 1
 
                 except KeyboardInterrupt:
-                    print("Pausing")
+                    print("Pausing\n")
                     cont = input("Resume?\t")
                     if cont in ["y", "yes"]:
                         print("Continuing time lapse")
                         continue
                     else:
                         print("Exiting time lapse")
+                        self.prepare_exit()
                         break
         return True
 
@@ -173,7 +174,7 @@ class TimeLapse:
         text = camera.get_summary()
         battery_level = self._get_battery_level(str(text))
         override_time = False
-        msg = ""
+        msg = f'<h2>Camera-Pi</h2>'
         # Handle Battery Checks
         if self.battery_level != battery_level:
             override_time = True
@@ -197,9 +198,10 @@ class TimeLapse:
             return True
 
         print("Battery Level: %s" % battery_level)
-        msg += f"<b>Camera-Pi</b><br>On Photo Frame: <b>{self.count}</b>"
-        msg += f"<br>Capture Group: <b>{self.args.name}</b>"
-        msg += f"<br>Last Uploaded: {self.last_uploaded}"
+
+        msg += f"<br>On Photo Frame: <b>{self.count}</b>"
+        msg += f"<br><b>Session Photos Taken</b>: {self.photos_taken}"        
+        msg += f"<br><b>Photos Uploaded</b>: {self.photos_uploaded}"
         msg += f"<br>Battery Level: <b>{self.battery_level}%</b>"
         msg += f"<br>Local Diskspace Available: "
 
@@ -216,10 +218,12 @@ class TimeLapse:
         for batt_level, batt_time in self.battery_levels.items():
             battery_levels_str[str(batt_level)] = date_utils.json_date_out(batt_time.datetime)
 
-        msg += f"<br>Batt Times<code>{str(battery_levels_str)}</code>"
         seconds = (now - self.started).seconds
         elapsed = date_utils.elsapsed_time_human(seconds)
         msg += f"<br>Session Run Time: <b>{elapsed}</b>"
+        msg += f"<br>Capture Group: <b>{self.args.name}</b>"
+        msg += f"<br>Last Uploaded: {self.last_uploaded}"
+        msg += f"<br>Batt Times<code>{str(battery_levels_str)}</code>"
 
         diff_notify = (now - self.notify_last).seconds 
         if diff_notify < 60:
@@ -228,6 +232,15 @@ class TimeLapse:
         self.check_in_last = arrow.now()
         self.cleanup()
         return True
+
+    def prepare_exit(self) -> bool:
+        msg = f'<h2>Camera-Pi</h2>'
+        msg += f"<br>On Photo Frame: <b>{self.count}</b>"
+        msg += f"<br>Capture Group: <b>{self.args.name}</b>"
+        msg += f"<br>Last Uploaded: {self.last_uploaded}"
+        msg += f"<br><b>Photos Taken</b>: {self.photos_taken}"
+        quigley_notify.send_notification(msg, room_id=ROOM_ID)
+        self.cleanup()
 
     def cleanup(self) -> bool:
         """Remove photos that have already been uploaded"""
@@ -262,18 +275,22 @@ class TimeLapse:
 
     def upload_photo(self, local_file: str) -> bool:
         """Upload a photo to backblaze."""
+        upload_start = arrow.utcnow()
         remote_phile = "raw_photos/%s/%s" % (
             self.args.name,
             local_file[local_file.rfind("/") + 1:]
         )
         uploaded = self.minio.upload_file(local_file, remote_phile, "image/jpeg")
+        upload_end = arrow.utcnow()
+        uploaded_diff = upload_end - upload_start
         public_photo = f"https://a1.alix.lol/{BUCKET_NAME}/{remote_phile}"
         self.last_uploaded = public_photo
         if uploaded:
             print("\tUploaded: %s" % public_photo)
+            self.photos_uploaded += 1
             return True
         else:
-            print("Error uploading to b2")
+            print("Error uploading to A1")
             return False
 
     def _setup_filesystem(self) -> bool:
@@ -316,10 +333,16 @@ def parse_args():
         default="all",
         help="Name of the photo series"),
     parser.add_argument(
+        "--no-wan",
+        action="store_true",
+        help="Run in no wide area network mode")
+
+    parser.add_argument(
         "-t",
         "--test",
         action="store_true",
         help="Take a test shot")
+
     parser.add_argument(
         "--cleanup",
         action="store_true",
@@ -329,9 +352,15 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    the_args = parse_args()
-    # TimeLapse(the_args).upload_photo()
-    TimeLapse(the_args).main()
+    try:
+        the_args = parse_args()
+        # TimeLapse(the_args).upload_photo()
+        TimeLapse(the_args).main()
+    except Exception as e:
+        msg = f'<h2>Camera-Pi</h2>'
+        msg += f'<h4><span style="color:red"><b>RECORDING STOPPED</b></span></h4>'
+        msg += f'<br>Recieved Error:<b/><code>{e}</code>'
+        quigley_notify.send_notification(msg, room_id=ROOM_ID)
 
 
 # End File: politeauthority/pixel-pulse/src/camera/timelapse.py
