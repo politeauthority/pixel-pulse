@@ -25,7 +25,7 @@ INTERVAL_PHOTO = 10.0
 INTERVAL_CHECK_IN = 500
 WORK_DIR = '/home/comitup/raw_photos'
 ROOM_ID = "!cdCwnaincUSIwCVjKh:squid-ink.us"
-BUCKET_NAME = "corrine-joe"
+BUCKET_NAME = "photos"
 
 
 class TimeLapse:
@@ -93,6 +93,7 @@ class TimeLapse:
             imageformat = imageformat_cfg.get_value()
             imageformat_cfg.set_value('Small Fine JPEG')
             camera.set_config(cfg)
+            print("Camera configured")
             # use camera
             yield camera
         finally:
@@ -132,7 +133,7 @@ class TimeLapse:
         with self.configured_camera() as camera:
             while True:
                 try:
-                    self.empty_event_queue(camera)
+                    # self.empty_event_queue(camera)
                     while True:
                         sleep = next_shot - time.time()
                         if sleep < 0.0:
@@ -200,8 +201,8 @@ class TimeLapse:
         print("Battery Level: %s" % battery_level)
 
         msg += f"<br>On Photo Frame: <b>{self.count}</b>"
-        msg += f"<br><b>Session Photos Taken</b>: {self.photos_taken}"        
-        msg += f"<br><b>Photos Uploaded</b>: {self.photos_uploaded}"
+        msg += f"<br>Session Photos Taken: <b>{self.photos_taken}</b>"
+        msg += f"<br>Photos Uploaded: <b>{self.photos_uploaded}</b>"
         msg += f"<br>Battery Level: <b>{self.battery_level}%</b>"
         msg += f"<br>Local Diskspace Available: "
 
@@ -228,7 +229,7 @@ class TimeLapse:
         diff_notify = (now - self.notify_last).seconds 
         if diff_notify < 60:
             return True
-        quigley_notify.send_notification(msg, room_id=ROOM_ID)
+        quigley_notify.send(msg, room_id=ROOM_ID)
         self.check_in_last = arrow.now()
         self.cleanup()
         return True
@@ -352,15 +353,16 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    try:
-        the_args = parse_args()
-        # TimeLapse(the_args).upload_photo()
-        TimeLapse(the_args).main()
-    except Exception as e:
-        msg = f'<h2>Camera-Pi</h2>'
-        msg += f'<h4><span style="color:red"><b>RECORDING STOPPED</b></span></h4>'
-        msg += f'<br>Recieved Error:<b/><code>{e}</code>'
-        quigley_notify.send_notification(msg, room_id=ROOM_ID)
+    the_args = parse_args()
+    TimeLapse(the_args).main()
+    # try:
+    #     the_args = parse_args()
+    #     TimeLapse(the_args).main()
+    # except Exception as e:
+    #     msg = f'<h2>Camera-Pi</h2>'
+    #     msg += f'<h4><span style="color:red"><b>RECORDING STOPPED</b></span></h4>'
+    #     msg += f'<br>Recieved Error:<b/><code>{e}</code>'
+    #     quigley_notify.send_notification(msg, room_id=ROOM_ID)
 
 
 # End File: politeauthority/pixel-pulse/src/camera/timelapse.py

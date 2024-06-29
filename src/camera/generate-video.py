@@ -37,8 +37,8 @@ class GenerateVideo:
         template = os.path.join(WORK_DIR, self.args.name, 'frame%04d.jpg')
         outfile = os.path.join(OUT_DIR, "%s_%s" % (self.args.name, "time_lapse.mp4"))
         cmd = [
-            'ffmpeg', '-r', framerate, '-i', template, '-c:v', 'h264', outfile]
-        print(cmd)
+            'ffmpeg', '-r', str(framerate), '-i', template, '-c:v', 'h264', outfile]
+        print(" ".join(cmd))
         if self.args.overwrite:
             cmd.append("-y")
         subprocess.check_call(cmd)

@@ -1,13 +1,28 @@
 version: "3"
 
 tasks:
+  cp-camera:
+    cmds:
+      - |
+        scp -r src/camera camera-pi.ts:/home/comitup/pixel-pulse/src/
+    silent: True
+
+  cp-camera-plib:
+    # args:
+    #   - name: registry
+    #     desc: Description of arg1 (optional)
+    #     required: false
+    cmds:
+      - |
+        scp -r ../polite-lib/src camera-pi.ts:/home/comitup/polite-lib
+    silent: True
+
   mirror:
     cmds:
       - |
-        mc mirror --watch a1/corrine-joe/raw_photos/rust data/rust
+        mc mirror --watch a1/photos/raw_photos/{{.CLI_ARGS}} data/{{.CLI_ARGS}}
 
-  generate-video:
+  gen-vid:
     cmds:
       - |
-        python3.10 src/camera/generate-video.py rust -o
-        # mc cp data/videos/rust_time_lapse.mp4 a1/corrine-joe/videos/
+        python3.10 src/camera/generate-video.py {{.CLI_ARGS}} -o
